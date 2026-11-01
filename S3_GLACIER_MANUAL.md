@@ -91,6 +91,7 @@ Object in DEEP_ARCHIVE, restore first: path/to/file
 | Change class of existing objects | `rclone settier` (via `secret:` or `mys3:`) |
 | Temporarily restore archives | `rclone backend restore` on **`mys3:`** |
 | Check restore progress | `rclone backend restore-status` on **`mys3:`** |
+| Delete objects | `rclone deletefile` / `delete` / `purge` on **`secret:`** |
 | Inspect class / tier | `rclone lsf --format pT` |
 | Lifecycle transition rules | **AWS Console / CLI** (not rclone) |
 | Glacier Vaults | **Not supported** |
@@ -650,7 +651,56 @@ Sources: [S3 pricing](https://aws.amazon.com/s3/pricing/),
 
 ---
 
-## 8. End-to-end recipes (defaults applied)
+## 8. Delete objects
+
+Prefer **`secret:`** so you use clear names. Deleting does **not** require a
+prior restore — S3 can delete archived objects directly (`s3:DeleteObject` is
+enough; already in the §2 policy).
+
+### One file
+
+```bash
+rclone deletefile secret:archives/2024/db.dump.gz --dry-run
+rclone deletefile secret:archives/2024/db.dump.gz
+```
+
+### Many files / a path
+
+```bash
+# Delete matching files under a path (not the directory marker itself)
+rclone delete secret:archives/2024/ --include "*.sql.gz" --dry-run
+rclone delete secret:archives/2024/ --include "*.sql.gz"
+
+# Remove a whole tree
+rclone purge secret:archives/old/ --dry-run
+rclone purge secret:archives/old/
+```
+
+With **filename encryption**, filters on `secret:` use **plaintext** names
+(rclone encrypts them for you). Filters on `mys3:` must use encrypted keys.
+
+### Deep Archive cost warning
+
+| Situation | Effect |
+|-----------|--------|
+| Object in `DEEP_ARCHIVE` for under 180 days | AWS charges **pro-rated remainder** of the 180-day minimum |
+| Object older than 180 days | No early-delete surcharge for the minimum duration |
+| Object currently restored | Delete removes the object (archive + any temp readable copy) |
+| Bucket **versioning** on | `deletefile` may only add a delete marker; purging versions needs extra steps/IAM |
+
+Always `--dry-run` first on bulk deletes.
+
+### Raw S3 (usually avoid)
+
+```bash
+rclone deletefile mys3:YOUR-BUCKET/ENC_KEY
+```
+
+Use only if you already mapped the encrypted key.
+
+---
+
+## 9. End-to-end recipes (defaults applied)
 
 ### A. Encrypted Deep Archive backup
 
@@ -690,9 +740,17 @@ rclone backend restore mys3:YOUR-BUCKET/ENC_DIR/ \
 rclone settier STANDARD secret:archives/2024/db.dump.gz
 ```
 
+### E. Delete one archived object
+
+```bash
+rclone deletefile secret:archives/2024/obsolete.dump.gz --dry-run
+rclone deletefile secret:archives/2024/obsolete.dump.gz
+# If younger than 180 days in DEEP_ARCHIVE, expect early-delete charges
+```
+
 ---
 
-## 9. Limitations and gotchas
+## 10. Limitations and gotchas
 
 1. **Single-file restore** needs `dir/ --include name`, not a file remote path.
 2. **Encrypted `--include`**: with filename encryption, filters on `mys3:` must
@@ -725,7 +783,7 @@ rclone settier STANDARD secret:archives/2024/db.dump.gz
 
 ---
 
-## 10. Quick command reference
+## 11. Quick command reference
 
 ```bash
 # Backup (crypt → Deep Archive)
@@ -748,11 +806,17 @@ rclone backend restore mys3:YOUR-BUCKET/ENC_PATH/ --include "ENC_FILE" \
 # Status / download
 rclone backend restore-status mys3:YOUR-BUCKET/ENC_PATH/
 rclone copy secret:clear/path/file ./local/
+
+# Delete (prefer secret:; watch 180-day early-delete fees)
+rclone deletefile secret:path/file --dry-run
+rclone deletefile secret:path/file
+rclone delete secret:path/ --include "pattern"
+rclone purge secret:old-tree/
 ```
 
 ---
 
-## 11. Decision guide
+## 12. Decision guide
 
 ```text
 Default stack
@@ -772,6 +836,9 @@ Want it permanently hot?
 
 Need cheaper egress on download?
   └─ After restore, use S3 download_url = CloudFront (see §7)
+
+Need to delete an object?
+  └─ rclone deletefile secret:path (no restore needed; 180-day fee if early)
 
 Need lifecycle automation?
   └─ Configure in AWS; rclone sets class on upload / settier only
